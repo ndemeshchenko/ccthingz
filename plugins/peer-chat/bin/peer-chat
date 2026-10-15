@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""Send one peer-chat message between coding agents running in a herdr tab.
+
+Ported from agterm's cookbook/two-agent-chat onto herdr's agent API. herdr submits
+prompts atomically and rejects a blocked agent server-side, so this script carries
+routing, identity and refusal policy rather than composer forensics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+
+# herdr returns from `agent prompt` as soon as the text is queued; the Enter is sent
+# 300ms later by a detached task (AGENT_PROMPT_SUBMIT_DELAY in src/app/api/agents.rs)
+# whose failure is only warn!-logged. Waiting for the peer's turn to start is the only
+# proof available that the submission actually happened.
+CONFIRM_TIMEOUT_MS = 8000
+RETRY_ATTEMPTS = 8
+RETRY_DELAY = 5.0
+RETRY_MAX_DELAY = 60.0
+CTL_TIMEOUT = 30
+MAX_MESSAGE_CHARS = 16000
+LABEL = "Chat from {kind}: "
+
+# Codex runs tool commands through a shared app-server daemon, so they inherit the
+# HERDR_* variables of whichever pane started the daemon, not of the Codex pane.
+CODEX_RELAUNCH = (
+    "If this is Codex, its commands inherit the environment of its shared app-server "
+    "daemon, not of its pane: relaunch Codex from its pane with "
+    "-c 'shell_environment_policy.set.HERDR_ENV=\"1\"' "
+    "-c \"shell_environment_policy.set.HERDR_PANE_ID=\\\"$HERDR_PANE_ID\\\"\" "
+    "-c \"shell_environment_policy.set.HERDR_TAB_ID=\\\"$HERDR_TAB_ID\\\"\" "
+    "(the codex shell function in ~/.zshrc does this)."
+)
+
+# Sending is refused unless the peer is in one of these states. `unknown` is excluded
+# deliberately: herdr documents it as "an agent is present but Herdr cannot classify it
+# confidently; it does not prove completion".
+SENDABLE = {"idle", "done"}
+
+
+class Refused(RuntimeError):
+    """Nothing was sent, and retrying cannot help. Structural or policy refusal."""
+
+
+class Busy(Refused):
+    """Nothing was sent because the peer was not ready. Retrying may help."""
+
+
+class Failed(RuntimeError):
+    """Terminal failure. Never retried: input may already have been delivered."""
+
+
+class Ambiguous(Failed):
+    """Text was queued but no lifecycle activity was observed after it.
+
+    herdr schedules the Enter 300ms after queueing the text (`send_bytes_after`, a
+    detached task whose failure is only warn!-logged), so a successful `agent prompt`
+    proves the text was queued, not that it was submitted. When confirmation is
+    requested and does not arrive, the message may be sitting unsubmitted in the peer's
+    composer. Never resend: read the pane.
+    """
+
+
+@dataclass(frozen=True)
+class Agent:
+    kind: str
+    name: str | None
+    pane_id: str
+    tab_id: str
+    status: str
+
+    @property
+    def target(self) -> str:
+        """herdr accepts a unique live agent name or the hosting pane ID."""
+        return self.name or self.pane_id
+
+    def __str__(self) -> str:
+        label = f"{self.kind} {self.name}" if self.name else self.kind
+        return f"{label} ({self.pane_id}, {self.status})"
+
+
+def herdr(*args: str) -> dict:
+    binary = os.environ.get("HERDR_BIN_PATH") or "herdr"
+    try:
+        result = subprocess.run(
+            [binary, *args],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=CTL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise Failed(f"herdr {' '.join(args)} timed out after {CTL_TIMEOUT}s") from err
+
+    body = result.stdout.strip() or result.stderr.strip()
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        raise Failed(f"herdr {' '.join(args)}: unparseable response: {body[:200]}") from None
+
+    if isinstance(payload, dict) and "error" in payload:
+        error = payload["error"]
+        raise HerdrError(str(error.get("code", "")), str(error.get("message", "")))
+    if result.returncode:
+        raise Failed(f"herdr {' '.join(args)} exited {result.returncode}: {body[:200]}")
+    return payload
+
+
+class HerdrError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}" if code else message)
+        self.code = code
+        self.message = message
+
+
+def agents() -> list[Agent]:
+    payload = herdr("agent", "list")
+    found = []
+    for raw in payload.get("result", {}).get("agents", []):
+        kind = raw.get("agent")
+        pane_id = raw.get("pane_id")
+        if not kind or not pane_id:
+            continue
+        found.append(
+            Agent(
+                kind=str(kind),
+                name=raw.get("name") or None,
+                pane_id=str(pane_id),
+                tab_id=str(raw.get("tab_id") or ""),
+                status=str(raw.get("agent_status") or "unknown"),
+            )
+        )
+    return found
+
+
+def require_inside_herdr() -> None:
+    if os.environ.get("HERDR_ENV") != "1":
+        raise Refused(
+            "not running inside a herdr-managed pane (HERDR_ENV is not 1). " + CODEX_RELAUNCH
+        )
+
+
+def find_self(population: list[Agent], override_kind: str | None, tab_override: str | None) -> Agent:
+    pane = os.environ.get("PEER_CHAT_SELF_PANE") or os.environ.get("HERDR_PANE_ID")
+    if pane:
+        for agent in population:
+            if agent.pane_id == pane:
+                return agent
+    if override_kind:
+        # A HERDR_PANE_ID naming no live agent was inherited from another pane, and
+        # HERDR_TAB_ID came with it: searching that tab reaches the wrong agents.
+        tab = tab_override or (None if pane else os.environ.get("HERDR_TAB_ID"))
+        if not tab:
+            raise Refused("--from needs an explicit --tab TAB_ID when HERDR_PANE_ID is "
+                          "unset or stale")
+        return Agent(override_kind, None, pane or "", tab, "unknown")
+    raise Refused(
+        f"cannot identify the calling agent: HERDR_PANE_ID={pane or '(unset)'} names no "
+        "live agent. " + CODEX_RELAUNCH + " Do not work around this with --from."
+    )
+
+
+def resolve_peer(
+    population: list[Agent], spec: str, me: Agent, tab: str | None
+) -> Agent:
+    by_name = [a for a in population if a.name == spec]
+    if len(by_name) == 1:
+        peer = by_name[0]
+    else:
+        by_pane = [a for a in population if a.pane_id == spec]
+        if len(by_pane) == 1:
+            peer = by_pane[0]
+        else:
+            scope = tab or me.tab_id
+            if not scope:
+                raise Refused(f"{spec!r} is not a live agent name or pane ID, and no tab "
+                              "is known to search by kind; pass --tab TAB_ID")
+            candidates = [
+                a
+                for a in population
+                if a.kind == spec and a.tab_id == scope and a.pane_id != me.pane_id
+            ]
+            if not candidates:
+                listing = ", ".join(str(a) for a in population if a.tab_id == scope) or "none"
+                raise Refused(
+                    f"no {spec!r} agent in tab {scope} other than this one. "
+                    f"Agents in this tab: {listing}"
+                )
+            if len(candidates) > 1:
+                listing = ", ".join(str(a) for a in candidates)
+                raise Refused(
+                    f"more than one {spec!r} agent in tab {scope}: {listing}. "
+                    "Name one with `herdr agent rename` and target it by name"
+                )
+            peer = candidates[0]
+
+    if peer.pane_id == me.pane_id:
+        raise Refused("refusing to send a message to the calling pane")
+    return peer
+
+
+def normalize(message: str, sender_kind: str, collapse: bool) -> str:
+    text = " ".join(message.split()) if collapse else message.strip()
+    label = LABEL.format(kind=sender_kind.capitalize())
+    stripped = label.strip()
+    while text.lower().startswith(stripped.lower()):
+        text = text[len(stripped) :].lstrip(": \n\t").strip()
+    if not text:
+        raise Refused("chat message is empty")
+    if len(text) > MAX_MESSAGE_CHARS:
+        raise Refused(
+            f"message is {len(text)} chars, over the {MAX_MESSAGE_CHARS} limit; "
+            "write it to a file and send the path instead"
+        )
+    return label + text
+
+
+def check_sendable(peer: Agent, allow_busy: bool) -> None:
+    if peer.status == "blocked":
+        raise Refused(
+            f"{peer} is waiting at an approval or question dialog. That answer is the "
+            "user's to give; nothing was sent"
+        )
+    if peer.status not in SENDABLE and not allow_busy:
+        raise Busy(
+            f"{peer} is not ready for input (state {peer.status!r}); nothing was sent"
+        )
+
+
+def send_once(peer: Agent, text: str, allow_busy: bool, confirm_ms: int) -> str:
+    """Submit one prompt. Returns "observed-activity" or "queued".
+
+    Neither value proves the message was submitted. herdr offers no causal link between a
+    prompt and a lifecycle transition: `agent_wait_matches` (wait.rs:540) is exactly
+    requested-status membership plus `state_change_seq > baseline`, with no request id,
+    turn id, input sequence, prompt hash or Enter acknowledgment, and the 0.8.2 help
+    states the wait "does not track turns". So "observed-activity" means only that herdr
+    reported *some* lifecycle activity for this pane within its 5000ms effect window --
+    strong enough to catch a message that went nowhere at all, too weak to attribute the
+    change to our Enter. It is weaker still where wait.rs:387-395 short-circuits on a
+    replayed release event, which skips the sequence-baseline check entirely.
+
+    One edge is not covered: if the AgentPrompted snapshot is already Working, wait.rs:232
+    skips the effect gate. Refusing to send to a working peer narrows that race but cannot
+    close it.
+
+    Classification follows herdr 0.8.2 `src/app/api/agents.rs::handle_agent_prompt`,
+    where every error path below is taken *before* any byte is written to the pane:
+
+      line  82  state == Blocked            -> agent_blocked
+      lines 92-109  no known agent, managed launch pending, or the agent is no
+                longer the pane foreground process -> agent_not_ready
+      line 124  try_send_bytes(text) failed -> agent_prompt_failed  (text not queued)
+
+    so all three are pre-write refusals. Policy still makes `agent_blocked`
+    terminal: approval dialogs require the user. The other two may be retried.
+    `agent_not_found` is *not* safe to retry: it is
+    returned both at line 80/99 (before the write) and at line 128 (after the text was
+    queued and the Enter scheduled), so a retry could duplicate.
+    """
+    check_sendable(peer, allow_busy)
+    args = ["agent", "prompt", peer.target, text]
+    if confirm_ms:
+        # wait.rs:232-277 runs an all-status "activity gate" against a state_change_seq
+        # baseline, capped at AGENT_PROMPT_EFFECT_TIMEOUT_MS = 5000, and only then (line
+        # 274) tests the statuses we asked for. Including idle and done means the gate's
+        # own evidence satisfies the match immediately, so we neither block until the turn
+        # settles nor lose a turn whose lifecycle advanced but had already returned to
+        # idle/done before our status check ran. It does NOT rescue a turn that completed
+        # between detector samples with idle->working->idle never recorded: then
+        # state_change_seq never advances and the gate stalls regardless.
+        #
+        # `unknown` is deliberately omitted: herdr documents it as "cannot classify
+        # confidently", which is not evidence of anything.
+        #
+        # Including idle/done does widen one real hole. wait.rs:387-395 handles
+        # PaneAgentDetected{released: true, final_status} by filtering final_status
+        # through our own `until` list and, on a hit, returning Matched built from
+        # wait.initial with the status overwritten -- without calling agent_wait_matches,
+        # so with no baseline check and no identity probe. Since last_event_sequence is
+        # captured before the prompt dispatch (wait.rs:196), a release/re-detect flap in
+        # that gap can be replayed afterwards. A released agent's usual final_status is
+        # idle or done, so a narrow working/blocked list would reject it while this list
+        # accepts it. Accepted knowingly: the result is only ever labelled
+        # "observed-activity", which claims no causality in the first place.
+        for status in ("idle", "done", "working", "blocked"):
+            args += ["--until", status]
+        args += ["--wait", "--timeout", str(confirm_ms)]
+    try:
+        herdr(*args)
+    except HerdrError as err:
+        if err.code == "agent_blocked":
+            raise Refused(f"{peer}: {err.code}: {err.message} (nothing was sent)") from err
+        if err.code in {"agent_not_ready", "agent_prompt_failed"}:
+            raise Busy(f"{peer}: {err.code}: {err.message} (nothing was sent)")
+        if err.code in {"agent_prompt_stalled", "timeout"}:
+            # herdr caps the effect window at min(confirm_ms, 5000) (wait.rs:235-237),
+            # so never quote confirm_ms here. Preserve herdr's own message.
+            raise Ambiguous(
+                f"{peer}: text was queued but herdr reported no lifecycle activity "
+                f"within its 5000ms effect window ({err.code}: {err.message}). The "
+                "message may be sitting unsubmitted in the composer. Read the pane; "
+                "do not resend"
+            ) from err
+        # Includes agent_not_found, which may be post-write. Never retried.
+        raise Failed(f"{peer}: {err.code}: {err.message}") from err
+    return "observed-activity" if confirm_ms else "queued"
+
+
+def send(peer_spec: str, text: str, args: argparse.Namespace) -> tuple[Agent, str]:
+    """Resolve and send. Only a Busy refusal is retried; nothing was sent in that case.
+
+    A structural Refused (no such peer, ambiguous kind, empty body) can never succeed on
+    a retry, so it propagates immediately. A Failed may already have delivered input and
+    is never retried, mirroring the pre-write/post-write boundary of the agterm original.
+    """
+    last: Busy | None = None
+    delay = min(args.retry_delay, RETRY_MAX_DELAY)
+    for attempt in range(1, args.retry + 1):
+        population = agents()
+        me = find_self(population, args.sender, args.tab)
+        peer = resolve_peer(population, peer_spec, me, args.tab)
+        body = normalize(text, args.sender or me.kind, args.collapse)
+        try:
+            check_sendable(peer, args.allow_busy)
+            if args.dry_run:
+                print(json.dumps({"target": peer.target, "peer": str(peer), "text": body}))
+                return peer, "dry-run"
+            return peer, send_once(peer, body, args.allow_busy, args.confirm_timeout)
+        except Busy as err:
+            last = err
+            if attempt == args.retry:
+                break
+            print(
+                f"peer-chat: attempt {attempt}/{args.retry} refused; "
+                f"retrying in {delay:g}s: {err}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, RETRY_MAX_DELAY)
+    raise Busy(f"{last} (after {args.retry} attempts)")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="peer-chat",
+        description="Send one message to a peer coding agent in this herdr tab.",
+    )
+    parser.add_argument("--to", required=True, metavar="PEER",
+                        help="peer agent kind (resolved within this tab), live agent name, or pane ID")
+    parser.add_argument("--from", dest="sender", metavar="KIND",
+                        help="override the sender kind used in the message label")
+    parser.add_argument("--tab", metavar="TAB_ID",
+                        help="search this tab instead of the caller's when --to is a kind")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--message", metavar="TEXT", help="message text as one argument")
+    source.add_argument("--stdin", action="store_true", help="read the message from stdin")
+    parser.add_argument("--collapse", action="store_true",
+                        help="collapse all whitespace to single spaces before sending")
+    parser.add_argument("--allow-busy", action="store_true",
+                        help="send even when the peer is working; this interrupts its turn")
+    parser.add_argument("--no-confirm", dest="confirm", action="store_false",
+                        help="skip the activity probe; nothing about delivery is observed")
+    parser.add_argument("--confirm-timeout", type=int, default=CONFIRM_TIMEOUT_MS,
+                        metavar="MS",
+                        help="how long to wait for any lifecycle activity after submission")
+    parser.add_argument("--retry", type=int, default=RETRY_ATTEMPTS, metavar="N",
+                        help=f"total attempts for safe pre-send retries, including the first (default: {RETRY_ATTEMPTS})")
+    parser.add_argument("--retry-delay", type=float, default=RETRY_DELAY, metavar="SECONDS",
+                        help=f"initial retry delay; doubles after each retry, capped at {RETRY_MAX_DELAY:g}s (default: {RETRY_DELAY:g})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="resolve and print the target and body without sending")
+    args = parser.parse_args(argv)
+    if args.retry < 1:
+        parser.error("--retry must be at least 1")
+    if not math.isfinite(args.retry_delay) or args.retry_delay <= 0:
+        parser.error("--retry-delay must be finite and greater than 0")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        require_inside_herdr()
+        if not args.confirm:
+            args.confirm_timeout = 0
+        text = sys.stdin.read() if args.stdin else (args.message or "")
+        peer, delivery = send(args.to, text, args)
+        print(json.dumps({"sent": len(text), "to": peer.target,
+                          "peer_kind": peer.kind, "delivery": delivery}))
+        return 0
+    except KeyboardInterrupt:
+        print("peer-chat: interrupted", file=sys.stderr)
+        return 130
+    except (Refused, Failed, HerdrError, OSError) as err:
+        print(f"peer-chat: {err}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

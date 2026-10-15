@@ -1,0 +1,15 @@
+{
+  "name": "ccthingz",
+  "description": "Claude Code plugins and skills by ndemeshchenko",
+  "owner": {
+    "name": "Nick Demeshchenko",
+    "url": "https://github.com/ndemeshchenko"
+  },
+  "plugins": [
+    {
+      "name": "peer-chat",
+      "source": "./plugins/peer-chat",
+      "description": "Talk with a Codex agent in a sibling herdr pane, as peers"
+    }
+  ]
+}

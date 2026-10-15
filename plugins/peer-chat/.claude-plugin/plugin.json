@@ -1,0 +1,13 @@
+{
+  "name": "peer-chat",
+  "version": "0.1.0",
+  "description": "Hold a back-and-forth conversation with a Codex agent running in another pane of the same herdr tab. Ships the peer-chat skill and the peer-chat script.",
+  "author": {
+    "name": "Nick Demeshchenko",
+    "url": "https://github.com/ndemeshchenko"
+  },
+  "homepage": "https://github.com/ndemeshchenko/ccthingz",
+  "repository": "https://github.com/ndemeshchenko/ccthingz",
+  "license": "MIT",
+  "keywords": ["herdr", "codex", "multi-agent", "peer-chat"]
+}

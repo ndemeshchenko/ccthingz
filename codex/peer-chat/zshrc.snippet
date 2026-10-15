@@ -1,0 +1,13 @@
+# Pins the herdr pane into Codex so peer-chat can identify it. Add to ~/.zshrc (zsh/bash).
+codex() {
+  if [[ ${HERDR_ENV:-} == 1 && -n ${HERDR_PANE_ID:-} ]]; then
+    command codex \
+      -c 'shell_environment_policy.set.HERDR_ENV="1"' \
+      -c "shell_environment_policy.set.HERDR_PANE_ID=\"$HERDR_PANE_ID\"" \
+      -c "shell_environment_policy.set.HERDR_TAB_ID=\"$HERDR_TAB_ID\"" \
+      -c "shell_environment_policy.set.HERDR_WORKSPACE_ID=\"$HERDR_WORKSPACE_ID\"" \
+      "$@"
+  else
+    command codex "$@"
+  fi
+}
