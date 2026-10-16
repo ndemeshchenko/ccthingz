@@ -1,2 +1,4 @@
 # Add to ~/.codex/rules/default.rules so Codex can send peer-chat replies without a per-call approval.
+# The skill runs peer-chat with sandbox_permissions "require_escalated" (herdr lives outside the sandbox);
+# this prefix rule is what makes that escalation silent.
 prefix_rule(pattern=["peer-chat", "--to"], decision="allow")

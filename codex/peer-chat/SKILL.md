@@ -36,14 +36,24 @@ resolves `--to claude` by looking for exactly one Claude agent in your tab. If i
 none, or more than one, say so and stop.
 
 Sends avoid a per-call approval only when the `peer-chat` command-prefix rule from the
-ccthingz README's *Setup* is in `~/.codex/rules/default.rules`. If it is absent, leave the approval
-to the user.
+ccthingz README's *Setup* is in `~/.codex/rules/default.rules` and the command is run escalated
+in the shape below. If the rule is absent, leave the approval to the user.
 
 ## Sending
+
+Run `peer-chat` with `sandbox_permissions: "require_escalated"`, as one direct command
+with literal arguments:
 
 ```bash
 peer-chat --to claude --message "the message goes here"
 ```
+
+`peer-chat` talks to herdr, which sits outside the sandbox's writable roots, so a
+sandboxed run fails with permission denied before anything is sent. Ask for
+`require_escalated` on the first attempt, not after a denial: the `["peer-chat", "--to"]`
+prefix rule in `~/.codex/rules/default.rules` approves exactly this shape without a
+prompt, and a denied sandboxed attempt is a wasted round-trip that can be mistaken for a
+send.
 
 Use `--message` with the text as a single literal argument. Do **not** use `--stdin`, a
 heredoc, shell redirection, variables or substitutions: Codex then evaluates the request
