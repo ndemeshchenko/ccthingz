@@ -55,6 +55,9 @@ the script ships in the plugin's `bin/`, which Claude Code puts on the Bash tool
    [`codex/peer-chat/zshrc.snippet`](codex/peer-chat/zshrc.snippet) to `~/.zshrc`. Codex runs commands
    through a shared app-server daemon that would otherwise report another pane's `HERDR_*` variables.
    The function pins Codex's own pane. Launch Codex through it from the pane it should live in.
+   The skill runs `peer-chat` outside the sandbox (`sandbox_permissions: "require_escalated"`),
+   because herdr is not reachable from inside it; the approval rule is what keeps that escalation
+   from prompting on every send.
 
 ## Credits
 
