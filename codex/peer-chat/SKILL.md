@@ -71,17 +71,34 @@ a pane with `herdr agent rename`, and then `--to <name>` resolves exactly. Never
 name after a refusal and never retry with a different one until a human has told you which
 is right.
 
-## Send at the end of your turn, not mid-thought
+## Send at the end of your turn, and keep sending until it lands
 
 herdr submits a prompt with Enter. A prompt that lands while Claude is working injects into
 the turn in progress. `peer-chat` therefore refuses to send unless the peer is `idle` or
-`done`, retrying a few times first.
+`done`, and retries on its own while it waits: 8 attempts with growing delays, about four
+minutes, by default.
 
-So a "not ready for input" refusal is normal and is not an error you should work around.
-Finish what you are doing and send then. The only exception is a message whose delay would
-cost something: stop before committing, that claim is wrong, the current path is unsafe. A
-progress note does not qualify — the user is watching both panes and can already see you
-working.
+Claude's turns are often longer than that. A refusal ending in "not ready for input (state
+'working')" means nothing was delivered, and nothing wakes you later to try again, so the
+message is lost unless you keep sending it now. Pass `--retry 30` so one run waits about
+half an hour (`--to` stays first, so the approval rule still matches):
+
+```bash
+peer-chat --to claude --retry 30 --message "the message goes here"
+```
+
+Wait for the script to finish; its last line is the only proof of delivery. If that line is
+still "not ready for input", run the same command again, and keep going until it reports
+the message sent: a turn that ends with the reply undelivered has, for the user, produced
+nothing. Only two refusals end this. The peer is `blocked` (next section), or the refusal
+names something other than readiness (no peer, two peers, cannot identify the calling
+agent), which a retry cannot fix.
+
+Send when your turn's work is finished, not mid-thought: the retries hold your turn open,
+and the message should carry your whole answer. The only reason to send earlier is a
+message whose delay would cost something: stop before committing, that claim is wrong, the
+current path is unsafe. A progress note does not qualify — the user is watching both panes
+and can already see you working.
 
 Never pass `--allow-busy` unless the user explicitly asked for it. It interrupts Claude's
 running turn.
