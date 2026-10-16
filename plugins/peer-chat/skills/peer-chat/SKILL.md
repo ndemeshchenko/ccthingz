@@ -83,6 +83,22 @@ already see you working.
 Never pass `--allow-busy` unless the user explicitly asked for it. It interrupts the
 peer's running turn.
 
+## A message that asks for a reply ends your turn
+
+The same gate protects you: Codex can deliver only while this pane is idle. So a
+review request, a question, anything you expect an answer to, is the last action of
+the turn. Send it and stop. Do not start the next task, run the test suite, read
+ahead or tidy up "while Codex thinks": each of those keeps this pane `working`, every
+delivery attempt is refused, and the answer you asked for is lost or lands in the
+middle of something else. The reply wakes you; nothing else needs to.
+
+| Thought | Reality |
+|---|---|
+| "I'll start the next task while it reviews" | The review cannot land. You will report an unreviewed task as reviewed. |
+| "Just this one more check first" | One check becomes a turn; the refusal clock on the other side is running. |
+| "I'll read Codex's pane to see if it answered" | That is polling, and it deadlocks (next section). Stop and let it come. |
+| "The message was only a heads-up" | Then it asked for nothing and you may go on. Anything that ends in a question or "verdict" is not a heads-up. |
+
 ## Receiving
 
 Codex replies by prompting this pane, so its message arrives as an ordinary prompt
