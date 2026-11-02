@@ -1,6 +1,6 @@
 {
   "name": "peer-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Hold a back-and-forth conversation with a Codex agent running in another pane of the same herdr tab. Ships the peer-chat skill and the peer-chat script.",
   "author": {
     "name": "Nick Demeshchenko",

@@ -24,8 +24,10 @@ You read both panes. The conversation is the result, even when code comes out of
 
 What the script takes care of:
 
-- **Routing:** `--to codex` / `--to claude` resolves to exactly one agent of that kind in the caller's
-  tab, or to a pane named or ID'd exactly. It refuses when the target is ambiguous.
+- **Routing:** `--to` takes an exact pane ID (any tab), else a pane name in the caller's tab, else an
+  agent kind (`codex` / `claude`) in the caller's tab; `--tab` changes which tab that is. It refuses
+  when the target is ambiguous, and names and kinds never cross tabs. The output reports the
+  `pane_id` and `tab_id` the message went to.
 - **Labelling:** messages arrive as `Chat from Claude: …` / `Chat from Codex: …`, so the receiver reads
   them as conversation, not as a new instruction from you.
 - **Turn safety:** it sends only when the peer is `idle` or `done`, so it never interrupts a turn in

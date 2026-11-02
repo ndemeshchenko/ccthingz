@@ -67,7 +67,8 @@ Note that the message text is visible in the process list while the command runs
 send secrets through it.
 
 If there are two Claude panes in the tab, the send refuses as ambiguous. The user can name
-a pane with `herdr agent rename`, and then `--to <name>` resolves exactly. Never guess a
+a pane with `herdr agent rename`, and then `--to <name>` resolves exactly within this tab.
+Names and kinds never resolve across tabs; only an exact pane ID does. Never guess a
 name after a refusal and never retry with a different one until a human has told you which
 is right.
 

@@ -59,12 +59,14 @@ once (`echo "$HERDR_PANE_ID"`) and write it literally into the last line, as in 
 example above (`w4:p4J` there is only an illustration). Keep the reply command in the
 `--message` form: Codex's approval rule matches only a plain `peer-chat --to ...` with a
 literal argument, and a `--stdin` heredoc sends its reply to an approval prompt instead. Keep the heredoc quoted: never
-send an unexpanded `$HERDR_PANE_ID`. A pane ID is an exact target, since `peer-chat`
-resolves `--to` by name, then by pane ID, then by kind.
+send an unexpanded `$HERDR_PANE_ID`. `peer-chat` resolves `--to` as an exact pane ID in
+any tab, then a live name in this tab, then a kind in this tab (`--tab` moves "this tab").
+A pane ID is therefore the only target that crosses tabs.
 
 If the user starts Codex through something `herdr agent list` reports under a different
 kind, or there are two Codex panes in the tab, target it by name instead — the user can
-name a pane with `herdr agent rename`, and then `--to <name>` resolves exactly. Never
+name a pane with `herdr agent rename`, and then `--to <name>` resolves exactly within this
+tab. Never
 guess a name after a refusal and never retry with a different one until a human has told
 you which is right.
 
