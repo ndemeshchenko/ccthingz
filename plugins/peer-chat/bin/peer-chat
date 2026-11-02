@@ -171,36 +171,43 @@ def find_self(population: list[Agent], override_kind: str | None, tab_override: 
 def resolve_peer(
     population: list[Agent], spec: str, me: Agent, tab: str | None
 ) -> Agent:
-    by_name = [a for a in population if a.name == spec]
-    if len(by_name) == 1:
-        peer = by_name[0]
+    """Exact pane ID in any tab, else a live name in scope, else a kind in scope.
+
+    scope is --tab, or the caller's tab. herdr names are unique per server, so an
+    unscoped name match would reach an agent in another tab or workspace (issue #4).
+    """
+    by_pane = [a for a in population if a.pane_id == spec]
+    if by_pane:
+        peer = by_pane[0]
     else:
-        by_pane = [a for a in population if a.pane_id == spec]
-        if len(by_pane) == 1:
-            peer = by_pane[0]
-        else:
-            scope = tab or me.tab_id
-            if not scope:
-                raise Refused(f"{spec!r} is not a live agent name or pane ID, and no tab "
-                              "is known to search by kind; pass --tab TAB_ID")
-            candidates = [
-                a
+        scope = tab or me.tab_id
+        if not scope:
+            raise Refused(f"{spec!r} is not a live pane ID, and no tab is known to search "
+                          "by name or kind; pass --tab TAB_ID")
+        candidates = [a for a in population if a.name == spec and a.tab_id == scope] or [
+            a
+            for a in population
+            if a.kind == spec and a.tab_id == scope and a.pane_id != me.pane_id
+        ]
+        if not candidates:
+            listing = ", ".join(str(a) for a in population if a.tab_id == scope) or "none"
+            elsewhere = "".join(
+                f" {spec!r} is in tab {a.tab_id} ({a.pane_id}): target it with "
+                f"--to {a.pane_id} or --tab {a.tab_id}."
                 for a in population
-                if a.kind == spec and a.tab_id == scope and a.pane_id != me.pane_id
-            ]
-            if not candidates:
-                listing = ", ".join(str(a) for a in population if a.tab_id == scope) or "none"
-                raise Refused(
-                    f"no {spec!r} agent in tab {scope} other than this one. "
-                    f"Agents in this tab: {listing}"
-                )
-            if len(candidates) > 1:
-                listing = ", ".join(str(a) for a in candidates)
-                raise Refused(
-                    f"more than one {spec!r} agent in tab {scope}: {listing}. "
-                    "Name one with `herdr agent rename` and target it by name"
-                )
-            peer = candidates[0]
+                if a.name == spec
+            )
+            raise Refused(
+                f"no {spec!r} agent in tab {scope} other than this one. "
+                f"Agents in this tab: {listing}.{elsewhere}"
+            )
+        if len(candidates) > 1:
+            listing = ", ".join(str(a) for a in candidates)
+            raise Refused(
+                f"more than one {spec!r} agent in tab {scope}: {listing}. "
+                "Name one with `herdr agent rename` and target it by name"
+            )
+        peer = candidates[0]
 
     if peer.pane_id == me.pane_id:
         raise Refused("refusing to send a message to the calling pane")
@@ -267,7 +274,8 @@ def send_once(peer: Agent, text: str, allow_busy: bool, confirm_ms: int) -> str:
     queued and the Enter scheduled), so a retry could duplicate.
     """
     check_sendable(peer, allow_busy)
-    args = ["agent", "prompt", peer.target, text]
+    # The pane ID, not the name: herdr resolves names server-wide.
+    args = ["agent", "prompt", peer.pane_id, text]
     if confirm_ms:
         # wait.rs:232-277 runs an all-status "activity gate" against a state_change_seq
         # baseline, capped at AGENT_PROMPT_EFFECT_TIMEOUT_MS = 5000, and only then (line
@@ -332,7 +340,8 @@ def send(peer_spec: str, text: str, args: argparse.Namespace) -> tuple[Agent, st
         try:
             check_sendable(peer, args.allow_busy)
             if args.dry_run:
-                print(json.dumps({"target": peer.target, "peer": str(peer), "text": body}))
+                print(json.dumps({"target": peer.pane_id, "tab_id": peer.tab_id,
+                                  "peer": str(peer), "text": body}))
                 return peer, "dry-run"
             return peer, send_once(peer, body, args.allow_busy, args.confirm_timeout)
         except Busy as err:
@@ -356,11 +365,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Send one message to a peer coding agent in this herdr tab.",
     )
     parser.add_argument("--to", required=True, metavar="PEER",
-                        help="peer agent kind (resolved within this tab), live agent name, or pane ID")
+                        help="exact pane ID (any tab), else a live agent name, else an agent "
+                             "kind; names and kinds resolve only within this tab")
     parser.add_argument("--from", dest="sender", metavar="KIND",
                         help="override the sender kind used in the message label")
     parser.add_argument("--tab", metavar="TAB_ID",
-                        help="search this tab instead of the caller's when --to is a kind")
+                        help="resolve --to names and kinds in this tab instead of the caller's")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--message", metavar="TEXT", help="message text as one argument")
     source.add_argument("--stdin", action="store_true", help="read the message from stdin")
@@ -395,8 +405,9 @@ def main(argv: list[str] | None = None) -> int:
             args.confirm_timeout = 0
         text = sys.stdin.read() if args.stdin else (args.message or "")
         peer, delivery = send(args.to, text, args)
-        print(json.dumps({"sent": len(text), "to": peer.target,
-                          "peer_kind": peer.kind, "delivery": delivery}))
+        print(json.dumps({"sent": len(text), "to": peer.target, "pane_id": peer.pane_id,
+                          "tab_id": peer.tab_id, "peer_kind": peer.kind,
+                          "delivery": delivery}))
         return 0
     except KeyboardInterrupt:
         print("peer-chat: interrupted", file=sys.stderr)
