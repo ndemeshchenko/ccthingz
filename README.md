@@ -8,6 +8,7 @@ plugin marketplace.
 ```sh
 claude plugin marketplace add ndemeshchenko/ccthingz
 claude plugin install peer-chat@ccthingz
+claude plugin install herdr-flow@ccthingz
 ```
 
 Or, inside a session: `/plugin marketplace add ndemeshchenko/ccthingz`, then `/plugin install peer-chat@ccthingz`.
@@ -60,6 +61,30 @@ the script ships in the plugin's `bin/`, which Claude Code puts on the Bash tool
    The skill runs `peer-chat` outside the sandbox (`sandbox_permissions: "require_escalated"`),
    because herdr is not reachable from inside it; the approval rule is what keeps that escalation
    from prompting on every send.
+
+### herdr-flow
+
+Three skills that take a piece of work from an issue to a merged PR, each stage in its own
+[herdr](https://herdr.dev) tab with Claude on the left and Codex on the right as the reviewer.
+
+- **`plan-flow-herdr`**: "plan #123". Opens a planning tab on the primary checkout. Claude
+  brainstorms and writes `docs/plans/<date>-<n>-<slug>.md` with Codex, takes it through Codex
+  review until the verdict is ship, walks you through it, then launches the implementation tab
+  and closes its own tab.
+- **`worktree-flow-herdr`**: "start #123 in a new worktree". Creates a git worktree in a sibling
+  directory (plus a docs worktree when your `CLAUDE.md` requires a docs change), opens a tab on
+  it, starts both agents with pinned models and gives Claude an opening prompt that already holds
+  the context. Claude commits per task, has Codex review each one, opens the PR(s) on Codex's
+  ship of the whole branch and watches CI to green. It never merges.
+- **`wrap-up-herdr`**: "wrap up #123" after the merge. Captures unpushed commits, unread review
+  verdicts and still-working agents first, then closes the tab and removes the worktrees and
+  branches, and writes a short retrospective.
+
+Requirements: herdr, `gh`, `jq`, and the **peer-chat** plugin above, set up on both sides: the
+agents talk only through it. The planning agent uses `superpowers:brainstorming` and a
+plan-writing skill when they are installed. The model pins in the skills (`claude-opus-5-5`,
+`gpt-6-sol` / `gpt-6-astra` with high reasoning) are a choice; change them in the skill text if
+you want other models.
 
 ## Credits
 
