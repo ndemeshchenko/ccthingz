@@ -1,0 +1,13 @@
+{
+  "name": "herdr-flow",
+  "version": "0.1.0",
+  "description": "Take an issue from plan to merged PR in herdr tabs: a planning tab and an implementation worktree tab, each with Claude on the left and a Codex reviewer on the right, plus the wrap-up after the merge.",
+  "author": {
+    "name": "Nick Demeshchenko",
+    "url": "https://github.com/ndemeshchenko"
+  },
+  "homepage": "https://github.com/ndemeshchenko/ccthingz",
+  "repository": "https://github.com/ndemeshchenko/ccthingz",
+  "license": "MIT",
+  "keywords": ["herdr", "codex", "multi-agent", "worktree", "workflow"]
+}

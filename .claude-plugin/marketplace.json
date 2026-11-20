@@ -10,6 +10,11 @@
       "name": "peer-chat",
       "source": "./plugins/peer-chat",
       "description": "Talk with a Codex agent in a sibling herdr pane, as peers"
+    },
+    {
+      "name": "herdr-flow",
+      "source": "./plugins/herdr-flow",
+      "description": "Plan an issue, implement it in a worktree tab and wrap up after the merge, with a Codex reviewer in herdr"
     }
   ]
 }
